@@ -12,23 +12,24 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// Flag hosts: Comma-seperated list of IP/hostnames to ping
-var hostsFlag string
+var (
+	hostsFlag     string // Flag hosts: Comma-seperated list of IP/hostnames to ping
+	pingCountFlag uint64 // Flag count: Uint8 Interger number of pings to send per cycle.
+	oneshotFlag   bool
+	intervalFlag  time.Duration
 
-// Flag count: Uint8 Interger number of pings to send per cycle.
-var pingCountFlag uint64
+	re_ping_packetloss *regexp.Regexp
+	re_ping_rtt        *regexp.Regexp
+	re_ping_hostname   *regexp.Regexp
 
-var oneshotFlag bool
-var intervalFlag time.Duration
-
-var re_ping_packetloss = regexp.MustCompile(`(?P<loss>\d+)\% packet loss`)
-var re_ping_rtt = regexp.MustCompile(`rtt min/avg/max/mdev = (?P<min>\d+.\d+)/(?P<avg>\d+.\d+)/(?P<max>\d+.\d+)/(?P<mdev>\d+.\d+) ms`)
-var re_ping_hostname = regexp.MustCompile(`--- (?P<hostname>\S+) ping statistics ---`)
+	pingBinary string // Path to ping binary based upon operating system
+)
 
 type PingData struct {
 	localHost       string
@@ -41,11 +42,27 @@ type PingData struct {
 	mdev            float64
 }
 
+func setOsParams() {
+	re_ping_hostname = regexp.MustCompile(`--- (?P<hostname>\S+) ping statistics ---`)
+
+	switch runtime.GOOS {
+	case "openbsd":
+		pingBinary = "/sbin/ping"
+		re_ping_packetloss = regexp.MustCompile(`(?P<loss>\d+.\d+)\% packet loss`)
+		re_ping_rtt = regexp.MustCompile(`round-trip min/avg/max/std-dev = (?P<min>\d+.\d+)/(?P<avg>\d+.\d+)/(?P<max>\d+.\d+)/(?P<mdev>\d+.\d+) ms`)
+	case "linux":
+		pingBinary = "/bin/ping"
+		re_ping_packetloss = regexp.MustCompile(`(?P<loss>\d+)\% packet loss`)
+		re_ping_rtt = regexp.MustCompile(`rtt min/avg/max/mdev = (?P<min>\d+.\d+)/(?P<avg>\d+.\d+)/(?P<max>\d+.\d+)/(?P<mdev>\d+.\d+) ms`)
+	}
+}
+
 func init() {
 	flag.StringVar(&hostsFlag, "hosts", "", "Comma-seperated list of hosts to ping.")
 	flag.Uint64Var(&pingCountFlag, "pingcount", 5, "Number of pings per cycle.")
 	flag.BoolVar(&oneshotFlag, "oneshot", false, "Execute just one ping round per host. Do not loop.")
 	flag.DurationVar(&intervalFlag, "interval", 60*time.Second, "Seconds of wait in between each round of pings.")
+	setOsParams()
 }
 
 // Return true if host resolves, false if not.
@@ -97,7 +114,7 @@ func parsePingOutput(pingOutput string, pingErr bool) PingData {
 func executePing(host string, numPings uint64) (string, bool) {
 	pingError := false
 	countFlag := fmt.Sprintf("-c%v", numPings)
-	out, err := exec.Command("/bin/ping", countFlag, host).Output()
+	out, err := exec.Command(pingBinary, countFlag, host).Output()
 	if err != nil {
 		log.Printf("Error with host %s, error: %s, output: %s\n.", host, err, out)
 		pingError = true
@@ -128,6 +145,7 @@ func receivePingData(c <-chan PingData) {
 
 func main() {
 	flag.Parse()
+	fmt.Printf("OS detected: %v\n", runtime.GOOS)
 	fmt.Println("hosts:", hostsFlag)
 	hosts := strings.Split(hostsFlag, ",")
 	validHosts := getValidHosts(hosts)

@@ -7,6 +7,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/jforman/carbon-golang"
 	"log"
 	"net"
 	"os"
@@ -19,11 +20,13 @@ import (
 )
 
 var (
-	carbonHostPortFlag string // Flag carbon: Host:port of Carbon Cache line receiver
-	hostsFlag          string // Flag hosts: Comma-seperated list of IP/hostnames to ping
-	pingCountFlag      uint64 // Flag count: Uint8 Interger number of pings to send per cycle.
-	oneshotFlag        bool
-	intervalFlag       time.Duration
+	carbonHostFlag string // Flag carbonHost: Host of Carbon Cache line receiver
+	carbonPortFlag int    // Flag carbonPort: Host of Carbon Cache line receiver
+	carbonNoopFlag bool   // If true, do not actually send the metrics to Carbon.
+	hostsFlag      string // Flag hosts: Comma-seperated list of IP/hostnames to ping
+	pingCountFlag  uint64 // Flag count: Uint8 Interger number of pings to send per cycle.
+	oneshotFlag    bool
+	intervalFlag   time.Duration
 
 	re_ping_packetloss *regexp.Regexp
 	re_ping_rtt        *regexp.Regexp
@@ -67,6 +70,10 @@ func init() {
 	flag.Uint64Var(&pingCountFlag, "pingcount", 5, "Number of pings per cycle.")
 	flag.BoolVar(&oneshotFlag, "oneshot", false, "Execute just one ping round per host. Do not loop.")
 	flag.DurationVar(&intervalFlag, "interval", 60*time.Second, "Seconds of wait in between each round of pings.")
+	flag.StringVar(&carbonHostFlag, "carbonhost", "", "Hostname of carbon receiver. Optional")
+	flag.IntVar(&carbonPortFlag, "carbonport", 0, "Port of carbon receiver.")
+	flag.BoolVar(&carbonNoopFlag, "carbonnoop", false, "If set, do not send Metrics to Carbon.")
+
 	setOsParams()
 }
 
@@ -148,40 +155,45 @@ func spawnPingLoop(c chan<- Ping,
 
 // TODO: figure out reflection here so i can just loop
 // over the struct fields
-func createCarbonMetrics(ping Ping) []string {
-	var out []string
+func createCarbonMetrics(ping Ping) []carbon.Metric {
+	var out []carbon.Metric
 	formattedDestination := strings.Replace(ping.destination, ".", "_", -1)
 	prefix := fmt.Sprintf("ping.%v.%v", ping.origin,
 		formattedDestination)
-
-	out = append(out, (fmt.Sprintf("%s.loss %v %v", prefix, ping.stats.loss, ping.time)))
-	out = append(out, (fmt.Sprintf("%s.min %v %v", prefix, ping.stats.min, ping.time)))
-	out = append(out, (fmt.Sprintf("%s.max %v %v", prefix, ping.stats.max, ping.time)))
-	out = append(out, (fmt.Sprintf("%s.avg %v %v", prefix, ping.stats.avg, ping.time)))
-	out = append(out, (fmt.Sprintf("%s.mdev %v %v", prefix, ping.stats.mdev, ping.time)))
+	out = append(out, carbon.Metric{Name: fmt.Sprintf("%s.loss", prefix), Value: ping.stats.loss, Timestamp: ping.time})
+	out = append(out, carbon.Metric{Name: fmt.Sprintf("%s.min", prefix), Value: ping.stats.min, Timestamp: ping.time})
+	out = append(out, carbon.Metric{Name: fmt.Sprintf("%s.avg", prefix), Value: ping.stats.avg, Timestamp: ping.time})
+	out = append(out, carbon.Metric{Name: fmt.Sprintf("%s.max", prefix), Value: ping.stats.max, Timestamp: ping.time})
+	out = append(out, carbon.Metric{Name: fmt.Sprintf("%s.mdev", prefix), Value: ping.stats.mdev, Timestamp: ping.time})
 	return out
 }
 
-func processPing(c <-chan Ping) {
+func processPing(c <-chan Ping) error {
+	carbonReceiver, err := carbon.NewCarbon(carbonHostFlag, carbonPortFlag, carbonNoopFlag)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Carbon Reciever Host: %v, Port: %v.\n", carbonReceiver.Host, carbonReceiver.Port)
 	for {
 		pingResult := <-c
-		fmt.Printf("data: %+v\n", pingResult)
 		metrics := createCarbonMetrics(pingResult)
-		fmt.Printf("metrics: %v\n", metrics)
+		if carbonReceiver != nil {
+			carbonReceiver.SendMetrics(metrics)
+		}
+
 	}
+	return nil
 }
 
 func main() {
 	flag.Parse()
-	fmt.Printf("OS detected: %v\n", runtime.GOOS)
-	fmt.Println("hosts:", hostsFlag)
 	hosts := strings.Split(hostsFlag, ",")
 	validHosts := getValidHosts(hosts)
-	fmt.Printf("valid hosts: %v\n", validHosts)
+	fmt.Printf("Hosts to ping: %v\n", validHosts)
 	var c chan Ping = make(chan Ping)
 	for _, currentHost := range validHosts {
+		fmt.Printf("Spawning ping loop for host %v.\n", currentHost)
 		go spawnPingLoop(c, currentHost, pingCountFlag, intervalFlag, oneshotFlag)
 	}
 	processPing(c)
-	fmt.Println("end of main")
 }

@@ -27,6 +27,7 @@ var (
 	pingCountFlag  uint64 // Flag count: Uint8 Interger number of pings to send per cycle.
 	oneshotFlag    bool
 	intervalFlag   time.Duration
+	verboseFlag    bool
 
 	re_ping_packetloss *regexp.Regexp
 	re_ping_rtt        *regexp.Regexp
@@ -73,6 +74,7 @@ func init() {
 	flag.StringVar(&carbonHostFlag, "carbonhost", "", "Hostname of carbon receiver. Optional")
 	flag.IntVar(&carbonPortFlag, "carbonport", 0, "Port of carbon receiver.")
 	flag.BoolVar(&carbonNoopFlag, "carbonnoop", false, "If set, do not send Metrics to Carbon.")
+	flag.BoolVar(&verboseFlag, "v", false, "If set, print out metrics as they are processed.")
 
 	setOsParams()
 }
@@ -97,7 +99,7 @@ func getValidHosts(hosts []string) []string {
 }
 
 // https://github.com/StefanSchroeder/Golang-Regex-Tutorial/blob/master/01-chapter2.markdown
-func makePing(pingOutput string, pingErr bool) Ping {
+func processPingOutput(pingOutput string, pingErr bool) Ping {
 	var ping Ping
 	var stats PingStats
 	now := time.Now()
@@ -129,7 +131,7 @@ func executePing(host string, numPings uint64) (string, bool) {
 	countFlag := fmt.Sprintf("-c%v", numPings)
 	out, err := exec.Command(pingBinary, countFlag, host).Output()
 	if err != nil {
-		log.Printf("Error with host %s, error: %s, output: %s\n.", host, err, out)
+		log.Printf("Error with host %s, error: %s, output: %s.\n", host, err, out)
 		pingError = true
 	}
 	s_out := string(out[:])
@@ -143,7 +145,7 @@ func spawnPingLoop(c chan<- Ping,
 	oneshot bool) {
 	for {
 		raw_output, err := executePing(host, numPings)
-		pingResult := makePing(raw_output, err)
+		pingResult := processPingOutput(raw_output, err)
 		c <- pingResult
 		time.Sleep(sleepTime)
 
@@ -157,6 +159,9 @@ func spawnPingLoop(c chan<- Ping,
 // over the struct fields
 func createCarbonMetrics(ping Ping) []carbon.Metric {
 	var out []carbon.Metric
+	if verboseFlag {
+		fmt.Printf("Ping: %v.\n", ping)
+	}
 	formattedDestination := strings.Replace(ping.destination, ".", "_", -1)
 	prefix := fmt.Sprintf("ping.%v.%v", ping.origin,
 		formattedDestination)
@@ -169,16 +174,17 @@ func createCarbonMetrics(ping Ping) []carbon.Metric {
 }
 
 func processPing(c <-chan Ping) error {
-	carbonReceiver, err := carbon.NewCarbon(carbonHostFlag, carbonPortFlag, carbonNoopFlag)
+	carbonReceiver, err := carbon.NewCarbon(carbonHostFlag, carbonPortFlag, carbonNoopFlag, verboseFlag)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Carbon Reciever Host: %v, Port: %v.\n", carbonReceiver.Host, carbonReceiver.Port)
 	for {
 		pingResult := <-c
 		metrics := createCarbonMetrics(pingResult)
-		if carbonReceiver != nil {
+		if carbonReceiver.IsDefined() {
 			carbonReceiver.SendMetrics(metrics)
+		} else {
+			fmt.Printf("Carbon Metrics: %v.\n", metrics)
 		}
 
 	}

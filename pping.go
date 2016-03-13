@@ -20,15 +20,14 @@ import (
 )
 
 var (
-	carbonHostFlag string // Flag carbonHost: Host of Carbon Cache line receiver
-	carbonPortFlag int    // Flag carbonPort: Host of Carbon Cache line receiver
-	carbonNoopFlag bool   // If true, do not actually send the metrics to Carbon.
-	hostsFlag      string // Flag hosts: Comma-seperated list of IP/hostnames to ping
-	pingCountFlag  uint64 // Flag count: Uint8 Interger number of pings to send per cycle.
-	oneshotFlag    bool
-	intervalFlag   time.Duration
-	verboseFlag    bool
-
+	carbonHostFlag     string // Flag carbonHost: Host of Carbon Cache line receiver
+	carbonPortFlag     int    // Flag carbonPort: Host of Carbon Cache line receiver
+	carbonNoopFlag     bool   // If true, do not actually send the metrics to Carbon.
+	hostsFlag          string // Flag hosts: Comma-seperated list of IP/hostnames to ping
+	pingCountFlag      uint64 // Flag count: Uint8 Interger number of pings to send per cycle.
+	oneshotFlag        bool
+	intervalFlag       time.Duration
+	verboseFlag        bool
 	re_ping_packetloss *regexp.Regexp
 	re_ping_rtt        *regexp.Regexp
 	re_ping_hostname   *regexp.Regexp
@@ -160,7 +159,7 @@ func spawnPingLoop(c chan<- Ping,
 func createCarbonMetrics(ping Ping) []carbon.Metric {
 	var out []carbon.Metric
 	if verboseFlag {
-		fmt.Printf("Ping: %v.\n", ping)
+		fmt.Printf("Ping: %+v.\n", ping)
 	}
 	formattedDestination := strings.Replace(ping.destination, ".", "_", -1)
 	prefix := fmt.Sprintf("ping.%v.%v", ping.origin,

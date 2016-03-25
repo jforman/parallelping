@@ -20,9 +20,10 @@ import (
 )
 
 var (
-	carbonHostFlag     string // Flag carbonHost: Host of Carbon Cache line receiver
-	carbonPortFlag     int    // Flag carbonPort: Host of Carbon Cache line receiver
-	carbonNoopFlag     bool   // If true, do not actually send the metrics to Carbon.
+	receiverHostFlag   string // receiverHost: Host running statistics daemon process
+	receiverPortFlag   int    // receiverPort: Port running statistics daemon process
+	receiverNoopFlag   bool   // If true, do not actually send the metrics to the receiver.
+	receiverTypeFlag   string // receiverType: Set type of receiver for statistics
 	hostsFlag          string // Flag hosts: Comma-seperated list of IP/hostnames to ping
 	pingCountFlag      uint64 // Flag count: Uint8 Interger number of pings to send per cycle.
 	oneshotFlag        bool
@@ -50,6 +51,18 @@ type Ping struct {
 	stats       PingStats
 }
 
+func checkValidReceiverType(rType string, validTypes []string) bool {
+	if rType == "" {
+		return true
+	}
+	for _, v := range validTypes {
+		if rType == v {
+			return true
+		}
+	}
+	return false
+}
+
 func setOsParams() {
 	re_ping_hostname = regexp.MustCompile(`--- (?P<hostname>\S+) ping statistics ---`)
 
@@ -70,10 +83,11 @@ func init() {
 	flag.Uint64Var(&pingCountFlag, "pingcount", 5, "Number of pings per cycle.")
 	flag.BoolVar(&oneshotFlag, "oneshot", false, "Execute just one ping round per host. Do not loop.")
 	flag.DurationVar(&intervalFlag, "interval", 60*time.Second, "Seconds of wait in between each round of pings.")
-	flag.StringVar(&carbonHostFlag, "carbonhost", "", "Hostname of carbon receiver. Optional")
-	flag.IntVar(&carbonPortFlag, "carbonport", 0, "Port of carbon receiver.")
-	flag.BoolVar(&carbonNoopFlag, "carbonnoop", false, "If set, do not send Metrics to Carbon.")
+	flag.StringVar(&receiverHostFlag, "receiverhost", "", "Hostname of metrics receiver. Optional")
+	flag.IntVar(&receiverPortFlag, "receiverport", 0, "Port of receiver.")
+	flag.BoolVar(&receiverNoopFlag, "receivernoop", false, "If set, do not send Metrics to receiver.")
 	flag.BoolVar(&verboseFlag, "v", false, "If set, print out metrics as they are processed.")
+	flag.StringVar(&receiverTypeFlag, "receivertype", "", "Type of receiver for statistics. Optional.")
 
 	setOsParams()
 }
@@ -122,6 +136,9 @@ func processPingOutput(pingOutput string, pingErr bool) Ping {
 		stats.mdev, _ = strconv.ParseFloat(re_rtt_matches[4], 64)
 	}
 	ping.stats = stats
+	if verboseFlag {
+		log.Printf("Ping: %+v.\n", ping)
+	}
 	return ping
 }
 
@@ -154,16 +171,10 @@ func spawnPingLoop(c chan<- Ping,
 	}
 }
 
-// TODO: figure out reflection here so i can just loop
-// over the struct fields
 func createCarbonMetrics(ping Ping) []carbon.Metric {
 	var out []carbon.Metric
-	if verboseFlag {
-		fmt.Printf("Ping: %+v.\n", ping)
-	}
 	formattedDestination := strings.Replace(ping.destination, ".", "_", -1)
-	prefix := fmt.Sprintf("ping.%v.%v", ping.origin,
-		formattedDestination)
+	prefix := fmt.Sprintf("ping.%v.%v", ping.origin, formattedDestination)
 	out = append(out, carbon.Metric{Name: fmt.Sprintf("%s.loss", prefix), Value: ping.stats.loss, Timestamp: ping.time})
 	out = append(out, carbon.Metric{Name: fmt.Sprintf("%s.min", prefix), Value: ping.stats.min, Timestamp: ping.time})
 	out = append(out, carbon.Metric{Name: fmt.Sprintf("%s.avg", prefix), Value: ping.stats.avg, Timestamp: ping.time})
@@ -173,31 +184,44 @@ func createCarbonMetrics(ping Ping) []carbon.Metric {
 }
 
 func processPing(c <-chan Ping) error {
-	carbonReceiver, err := carbon.NewCarbon(carbonHostFlag, carbonPortFlag, carbonNoopFlag, verboseFlag)
+	var err error
+	var carbonReceiver *carbon.Carbon
+
+	switch receiverTypeFlag {
+	case "carbon":
+		carbonReceiver, err = carbon.NewCarbon(receiverHostFlag, receiverPortFlag, receiverNoopFlag, verboseFlag)
+	case "influxdb":
+		log.Printf("TODO: Create new influxdb receiver.\n")
+	}
+
 	if err != nil {
 		return err
 	}
 	for {
 		pingResult := <-c
-		metrics := createCarbonMetrics(pingResult)
-		if carbonReceiver.IsDefined() {
-			carbonReceiver.SendMetrics(metrics)
-		} else {
-			fmt.Printf("Carbon Metrics: %v.\n", metrics)
+		switch receiverTypeFlag {
+		case "carbon":
+			carbonReceiver.SendMetrics(createCarbonMetrics(pingResult))
+		case "influxdb":
+			log.Println("TODO: Send to influxdb!")
 		}
-
 	}
 	return nil
 }
 
 func main() {
 	flag.Parse()
+	hasValidReceiver := checkValidReceiverType(receiverTypeFlag, []string{"carbon", "influxdb"})
+	if !hasValidReceiver {
+		log.Fatalf("You specified an unsupported receiver type %v.\n", receiverTypeFlag)
+	}
+
 	hosts := strings.Split(hostsFlag, ",")
 	validHosts := getValidHosts(hosts)
-	fmt.Printf("Hosts to ping: %v\n", validHosts)
+	log.Printf("Hosts to ping: %v\n", validHosts)
 	var c chan Ping = make(chan Ping)
 	for _, currentHost := range validHosts {
-		fmt.Printf("Spawning ping loop for host %v.\n", currentHost)
+		log.Printf("Spawning ping loop for host %v.\n", currentHost)
 		go spawnPingLoop(c, currentHost, pingCountFlag, intervalFlag, oneshotFlag)
 	}
 	processPing(c)

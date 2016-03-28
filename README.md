@@ -3,22 +3,19 @@ Parallel Ping
 
 # What is it?
 
-A Go-binary used to ping remote hosts and return the min/max/avg/dev data as a Struct for later processing. Pings are run simultaneously in parallel, as serializing pings to multiple hosts does not bode well for getting consistent metrics. This Go binary integrates tightly with http://www.github.com/jforman/carbon-golang to send these Ping metrics back to a Carbon Cache for visualization within Graphite.
+A Go-binary used to ping remote hosts and return the min/max/avg/dev data for later processing. Pings are run in parallel, as serializing pings to multiple hosts does not bode well for getting consistent metrics. This Go binary integrates with several time series databases for storage and further visualization:
+
+* [github.com/jforman/carbon-golang](http://www.github.com/jforman/carbon-golang) to send Ping metrics to a Carbon Cache.
+* [github.com/influxdata/influxdb](https://github.com/influxdata/influxdb/tree/master/client/v2) to send Ping metrics to InfluxDB.
 
 # How do I use it?
 
-After putting the repository for both this binary and the carbon-golang library in your GOWORK path, it is as simple as executing pping.go.
+Run 'pping' with the appropriate flags!
 
 ### Help Output
 
 ```bash
 $ go run pping.go --help
-  -carbonhost string
-    	Hostname of carbon receiver. Optional
-  -carbonnoop
-    	If set, do not send Metrics to Carbon.
-  -carbonport int
-    	Port of carbon receiver.
   -hosts string
     	Comma-seperated list of hosts to ping.
   -interval duration
@@ -27,6 +24,22 @@ $ go run pping.go --help
     	Execute just one ping round per host. Do not loop.
   -pingcount uint
     	Number of pings per cycle. (default 5)
+  -receiverdatabase string
+    	Database for InfluxDB.
+  -receiverhost string
+    	Hostname of metrics receiver. Optional
+  -receivernoop
+    	If set, do not send Metrics to receiver.
+  -receiverpassword string
+    	Password for InfluxDB database. Optional.
+  -receiverport int
+    	Port of receiver.
+  -receivertype string
+    	Type of receiver for statistics. Optional.
+  -receiverusername string
+    	Username for InfluxDB database. Optional.
+  -v	If set, print out metrics as they are processed.
+exit status 2
 ```
 
 The help output should be self explanatory, both with required and optional parameters. 
@@ -34,25 +47,14 @@ The help output should be self explanatory, both with required and optional para
 An example of a parallel ping execution:
 
 ```bash
-$ go run pping.go -hosts www.facebook.com,www.google.com -pingcount 3 -interval 30s  -v
-
-Hosts to ping: [www.facebook.com www.google.com]
-
-Spawning ping loop for host www.facebook.com.
-Spawning ping loop for host www.google.com.
-
-Ping: {oyster www.google.com 1456662993 {0 44.952 45.354 46.049 0.493}}.
-Carbon Metrics: [ping.oyster.www_google_com.loss 0.000000 1456662993 ping.oyster.www_google_com.min 44.952000 1456662993 ping.oyster.www_google_com.avg 45.354000 1456662993 ping.oyster.www_google_com.max 46.049000 1456662993 ping.oyster.www_google_com.mdev 0.493000 1456662993].
-
-Ping: {oyster star-mini.c10r.facebook.com 1456662993 {0 83.383 83.618 84.011 0.435}}.
-Carbon Metrics: [ping.oyster.star-mini_c10r_facebook_com.loss 0.000000 1456662993 ping.oyster.star-mini_c10r_facebook_com.min 83.383000 1456662993 ping.oyster.star-mini_c10r_facebook_com.avg 83.618000 1456662993 ping.oyster.star-mini_c10r_facebook_com.max 84.011000 1456662993 ping.oyster.star-mini_c10r_facebook_com.mdev 0.435000 1456662993].
+$ pping -hosts www.google.com -pingcount 2 -interval 5s -v
+2016/03/27 21:16:54 Hosts to ping: [www.google.com]
+2016/03/27 21:16:54 Spawning ping loop for host www.google.com.
+2016/03/27 21:16:55 Ping: {origin:oyster destination:www.google.com time:1459127815 stats:{loss:0 min:20.118 avg:21.142 max:22.166 mdev:1.024}}.
+2016/03/27 21:17:01 Ping: {origin:oyster destination:www.google.com time:1459127821 stats:{loss:0 min:20.951 avg:21.543 max:22.136 mdev:0.61}}.
 ```
 
 The `-v` flag adds aggregate-Ping output like below if you wish:
-
-```bash
-Ping: {oyster www.google.com 1456662993 {0 44.952 45.354 46.049 0.493}}.
-```
 
 ## Integrating with carbon-golang
 
@@ -65,3 +67,29 @@ ping.{originating_host}.{destination_host}.{ping_metric}
 ```
 
 Where ping metric is one of min, max, avg, and stddev.
+
+## Integrating with [InfluxDB](https://influxdata.com/)
+
+InfluxDB is a Go-based time series storage system that is meant to replace Whisper+Carbon.
+
+If you wish to send your Ping metrics to Influx DB is it required that you specify a database on the command line via the 'receiverdatabase' flag.
+
+Metrics are sent as 'ping' measurements with the following tags and fields:
+
+Tags
+
+| Name | Description |
+| --- | --- |
+| origin | Originating host of the pings |
+| destination | Destination hostname of the pings |
+
+Fields
+
+| Name | Description |
+| --- | --- |
+| min | minimum RTT observed over Ping execution |
+| avg | average RTT observed over Ping execution |
+| max | maxmimum RTT observed over Ping execution |
+| loss | Percentage packet loss during the ping execution. |
+| mdev | Standard deviation, or essentially the averag eof how far each ping RTT is from the mean. |
+

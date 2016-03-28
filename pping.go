@@ -1,12 +1,11 @@
 // Ping multiple hosts in parallel
 
-// time notes: https://gobyexample.com/epoch
-
 package main
 
 import (
 	"flag"
 	"fmt"
+	influxdbclient "github.com/influxdata/influxdb/client/v2"
 	"github.com/jforman/carbon-golang"
 	"log"
 	"net"
@@ -20,10 +19,14 @@ import (
 )
 
 var (
-	receiverHostFlag   string // receiverHost: Host running statistics daemon process
-	receiverPortFlag   int    // receiverPort: Port running statistics daemon process
-	receiverNoopFlag   bool   // If true, do not actually send the metrics to the receiver.
-	receiverTypeFlag   string // receiverType: Set type of receiver for statistics
+	receiverHostFlag     string // receiverHost: Host running statistics daemon process
+	receiverPortFlag     int    // receiverPort: Port running statistics daemon process
+	receiverNoopFlag     bool   // If true, do not actually send the metrics to the receiver.
+	receiverTypeFlag     string // receiverType: Set type of receiver for statistics
+	receiverUsernameFlag string // receiverUsername: Optional username string for InfluxDB receiver.
+	receiverPasswordFlag string // receiverPassword: Optional password string for InfluxDB receiver.
+	receiverDatabaseFlag string // receiverDatabase: Database database string for InfluxDB receiver.
+
 	hostsFlag          string // Flag hosts: Comma-seperated list of IP/hostnames to ping
 	pingCountFlag      uint64 // Flag count: Uint8 Interger number of pings to send per cycle.
 	oneshotFlag        bool
@@ -34,6 +37,7 @@ var (
 	re_ping_hostname   *regexp.Regexp
 
 	pingBinary string // Path to ping binary based upon operating system)
+
 )
 
 type PingStats struct {
@@ -49,6 +53,13 @@ type Ping struct {
 	destination string
 	time        int64
 	stats       PingStats
+}
+
+func isReceiverFullyDefined() bool {
+	if len(receiverHostFlag) > 0 && (receiverPortFlag > 0) {
+		return true
+	}
+	return false
 }
 
 func checkValidReceiverType(rType string, validTypes []string) bool {
@@ -88,6 +99,9 @@ func init() {
 	flag.BoolVar(&receiverNoopFlag, "receivernoop", false, "If set, do not send Metrics to receiver.")
 	flag.BoolVar(&verboseFlag, "v", false, "If set, print out metrics as they are processed.")
 	flag.StringVar(&receiverTypeFlag, "receivertype", "", "Type of receiver for statistics. Optional.")
+	flag.StringVar(&receiverUsernameFlag, "receiverusername", "", "Username for InfluxDB database. Optional.")
+	flag.StringVar(&receiverPasswordFlag, "receiverpassword", "", "Password for InfluxDB database. Optional.")
+	flag.StringVar(&receiverDatabaseFlag, "receiverdatabase", "", "Database for InfluxDB.")
 
 	setOsParams()
 }
@@ -111,7 +125,6 @@ func getValidHosts(hosts []string) []string {
 	return trimmedHosts
 }
 
-// https://github.com/StefanSchroeder/Golang-Regex-Tutorial/blob/master/01-chapter2.markdown
 func processPingOutput(pingOutput string, pingErr bool) Ping {
 	var ping Ping
 	var stats PingStats
@@ -183,27 +196,90 @@ func createCarbonMetrics(ping Ping) []carbon.Metric {
 	return out
 }
 
+func createInfluxDBMetrics(ping Ping) (influxdbclient.BatchPoints, error) {
+	var err error
+	bp, err := influxdbclient.NewBatchPoints(influxdbclient.BatchPointsConfig{
+		Database:  receiverDatabaseFlag,
+		Precision: "s",
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	tags := map[string]string{
+		"origin":      ping.origin,
+		"destination": ping.destination,
+	}
+	fields := map[string]interface{}{
+		"loss": ping.stats.loss,
+		"min":  ping.stats.min,
+		"avg":  ping.stats.avg,
+		"max":  ping.stats.max,
+		"mdev": ping.stats.mdev,
+	}
+	pt, err := influxdbclient.NewPoint("ping", tags, fields, time.Unix(ping.time, 0))
+	if err != nil {
+		return nil, err
+	}
+
+	bp.AddPoint(pt)
+	return bp, nil
+}
+
 func processPing(c <-chan Ping) error {
 	var err error
 	var carbonReceiver *carbon.Carbon
+	var ic influxdbclient.Client
 
 	switch receiverTypeFlag {
 	case "carbon":
 		carbonReceiver, err = carbon.NewCarbon(receiverHostFlag, receiverPortFlag, receiverNoopFlag, verboseFlag)
 	case "influxdb":
-		log.Printf("TODO: Create new influxdb receiver.\n")
+		if receiverDatabaseFlag == "" {
+			log.Fatalln("An InfluxDB database was not specified on the command line.")
+		}
+		if len(receiverUsernameFlag) > 0 {
+			ic, err = influxdbclient.NewHTTPClient(
+				influxdbclient.HTTPConfig{
+					Addr:     fmt.Sprintf("http://%v:%v", receiverHostFlag, receiverPortFlag),
+					Username: receiverUsernameFlag,
+					Password: receiverPasswordFlag,
+				})
+		} else {
+			ic, err = influxdbclient.NewHTTPClient(
+				influxdbclient.HTTPConfig{
+					Addr: fmt.Sprintf("http://%v:%v", receiverHostFlag, receiverPortFlag),
+				})
+		}
 	}
 
 	if err != nil {
-		return err
+		log.Println("error in creating a connection, but ignoring")
+		//		return err
 	}
 	for {
 		pingResult := <-c
+		if !isReceiverFullyDefined() {
+			continue
+		}
 		switch receiverTypeFlag {
 		case "carbon":
-			carbonReceiver.SendMetrics(createCarbonMetrics(pingResult))
+			err := carbonReceiver.SendMetrics(createCarbonMetrics(pingResult))
+			if err != nil {
+				log.Printf("Error sending metrics to Carbon: %v.\n", err)
+			}
 		case "influxdb":
-			log.Println("TODO: Send to influxdb!")
+			ret, err := createInfluxDBMetrics(pingResult)
+			if err != nil {
+				log.Fatalln(err)
+			}
+			err = ic.Write(ret)
+			if err != nil {
+				log.Printf("Error writing metrics to Influxdb: %v.\n", err)
+			}
+		}
+		if verboseFlag {
+			log.Printf("Successfully published %v metrics to %v.\n", receiverTypeFlag, receiverHostFlag)
 		}
 	}
 	return nil
@@ -224,5 +300,8 @@ func main() {
 		log.Printf("Spawning ping loop for host %v.\n", currentHost)
 		go spawnPingLoop(c, currentHost, pingCountFlag, intervalFlag, oneshotFlag)
 	}
-	processPing(c)
+	err := processPing(c)
+	if err != nil {
+		log.Printf("Error in call to processPing: %v.\n", err)
+	}
 }

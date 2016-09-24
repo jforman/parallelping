@@ -260,6 +260,8 @@ func processPing(c <-chan Ping) error {
 	for {
 		pingResult := <-c
 		if !isReceiverFullyDefined() {
+			log.Printf("Receiver is not fully defined: host: %v Port %v\n.",
+				receiverHostFlag, receiverPortFlag)
 			continue
 		}
 		switch receiverTypeFlag {

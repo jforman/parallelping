@@ -76,7 +76,7 @@ func checkValidReceiverType(rType string, validTypes []string) bool {
 
 func setOsParams() {
 	re_ping_hostname = regexp.MustCompile(`--- (?P<hostname>\S+) ping statistics ---`)
-
+	log.Printf("Operating System determined to be: %v.\n", runtime.GOOS)
 	switch runtime.GOOS {
 	case "openbsd":
 		pingBinary = "/sbin/ping"
@@ -85,7 +85,9 @@ func setOsParams() {
 	case "linux":
 		pingBinary = "/bin/ping"
 		re_ping_packetloss = regexp.MustCompile(`(?P<loss>\d+)\% packet loss`)
-		re_ping_rtt = regexp.MustCompile(`rtt min/avg/max/mdev = (?P<min>\d+.\d+)/(?P<avg>\d+.\d+)/(?P<max>\d+.\d+)/(?P<mdev>\d+.\d+) ms`)
+		re_ping_rtt = regexp.MustCompile(`(rtt|round-trip) min/avg/max/(mdev|stddev) = (?P<min>\d+.\d+)/(?P<avg>\d+.\d+)/(?P<max>\d+.\d+)/(?P<mdev>\d+.\d+) ms`)
+	default:
+		log.Fatalf("Unable to determine runtime.GOOS: %v.\n", runtime.GOOS)
 	}
 }
 
@@ -137,16 +139,23 @@ func processPingOutput(pingOutput string, pingErr bool) Ping {
 	ping.destination = re_ping_hostname_matches[1]
 
 	re_packetloss_matches := re_ping_packetloss.FindAllStringSubmatch(pingOutput, -1)[0]
+
 	stats.loss, _ = strconv.ParseFloat(re_packetloss_matches[1], 64)
 
 	if pingErr == true {
 		stats.min, stats.avg, stats.max, stats.mdev = 0, 0, 0, 0
 	} else {
 		re_rtt_matches := re_ping_rtt.FindAllStringSubmatch(pingOutput, -1)[0]
-		stats.min, _ = strconv.ParseFloat(re_rtt_matches[1], 64)
-		stats.avg, _ = strconv.ParseFloat(re_rtt_matches[2], 64)
-		stats.max, _ = strconv.ParseFloat(re_rtt_matches[3], 64)
-		stats.mdev, _ = strconv.ParseFloat(re_rtt_matches[4], 64)
+		rtt_map := make(map[string]string)
+		for i, name := range re_ping_rtt.SubexpNames() {
+			if i != 0 {
+				rtt_map[name] = re_rtt_matches[i]
+			}
+		}
+		stats.min, _ = strconv.ParseFloat(rtt_map["min"], 64)
+		stats.avg, _ = strconv.ParseFloat(rtt_map["avg"], 64)
+		stats.max, _ = strconv.ParseFloat(rtt_map["max"], 64)
+		stats.mdev, _ = strconv.ParseFloat(rtt_map["mdev"], 64)
 	}
 	ping.stats = stats
 	if verboseFlag {
@@ -164,6 +173,9 @@ func executePing(host string, numPings uint64) (string, bool) {
 		pingError = true
 	}
 	s_out := string(out[:])
+	if verboseFlag {
+		log.Printf("Raw Ping Output: %v.\n", s_out)
+	}
 	return s_out, pingError
 }
 
@@ -255,13 +267,12 @@ func processPing(c <-chan Ping) error {
 
 	if err != nil {
 		log.Println("error in creating a connection, but ignoring")
-		//		return err
 	}
 	for {
 		pingResult := <-c
 		if !isReceiverFullyDefined() {
-			log.Printf("Receiver is not fully defined: host: %v Port %v\n.",
-				receiverHostFlag, receiverPortFlag)
+			// No receiver is defined. Silently skip.
+			// Should I really log something each iteration? That seems unnecessarily noisy.
 			continue
 		}
 		switch receiverTypeFlag {
@@ -280,6 +291,7 @@ func processPing(c <-chan Ping) error {
 				log.Printf("Error writing metrics to Influxdb: %v.\n", err)
 			}
 		}
+
 		if verboseFlag {
 			log.Printf("Successfully published %v metrics to %v.\n", receiverTypeFlag, receiverHostFlag)
 		}

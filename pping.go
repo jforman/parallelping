@@ -35,6 +35,7 @@ var (
 	re_ping_packetloss *regexp.Regexp
 	re_ping_rtt        *regexp.Regexp
 	re_ping_hostname   *regexp.Regexp
+	quietFlag          bool
 
 	pingBinary string // Path to ping binary based upon operating system)
 
@@ -76,7 +77,9 @@ func checkValidReceiverType(rType string, validTypes []string) bool {
 
 func setOsParams() {
 	re_ping_hostname = regexp.MustCompile(`--- (?P<hostname>\S+) ping statistics ---`)
-	log.Printf("Operating System determined to be: %v.\n", runtime.GOOS)
+	if !quietFlag {
+		log.Printf("Operating System determined to be: %v.\n", runtime.GOOS)
+	}
 	switch runtime.GOOS {
 	case "openbsd":
 		pingBinary = "/sbin/ping"
@@ -104,8 +107,7 @@ func init() {
 	flag.StringVar(&receiverUsernameFlag, "receiverusername", "", "Username for InfluxDB database. Optional.")
 	flag.StringVar(&receiverPasswordFlag, "receiverpassword", "", "Password for InfluxDB database. Optional.")
 	flag.StringVar(&receiverDatabaseFlag, "receiverdatabase", "", "Database for InfluxDB.")
-
-	setOsParams()
+	flag.BoolVar(&quietFlag, "q", false, "If set, only log in case of errors.")
 }
 
 // Return true if host resolves, false if not.
@@ -158,7 +160,7 @@ func processPingOutput(pingOutput string, pingErr bool) Ping {
 		stats.mdev, _ = strconv.ParseFloat(rtt_map["mdev"], 64)
 	}
 	ping.stats = stats
-	if verboseFlag {
+	if !quietFlag {
 		log.Printf("Ping: %+v.\n", ping)
 	}
 	return ping
@@ -266,13 +268,14 @@ func processPing(c <-chan Ping) error {
 	}
 
 	if err != nil {
-		log.Println("error in creating a connection, but ignoring")
+		log.Println("Error in creating connection to receiver. Ignoring and moving on.")
 	}
 	for {
 		pingResult := <-c
 		if !isReceiverFullyDefined() {
 			// No receiver is defined. Silently skip.
 			// Should I really log something each iteration? That seems unnecessarily noisy.
+			log.Printf("You receiver is not fully defined. Host: %v, Port: %v.\n", receiverHostFlag, receiverPortFlag)
 			continue
 		}
 		switch receiverTypeFlag {
@@ -301,6 +304,8 @@ func processPing(c <-chan Ping) error {
 
 func main() {
 	flag.Parse()
+	setOsParams()
+
 	hasValidReceiver := checkValidReceiverType(receiverTypeFlag, []string{"carbon", "influxdb"})
 	if !hasValidReceiver {
 		log.Fatalf("You specified an unsupported receiver type %v.\n", receiverTypeFlag)
@@ -308,10 +313,14 @@ func main() {
 
 	hosts := strings.Split(hostsFlag, ",")
 	validHosts := getValidHosts(hosts)
-	log.Printf("Hosts to ping: %v\n", validHosts)
+	if !quietFlag {
+		log.Printf("Hosts to ping: %v\n", validHosts)
+	}
 	var c chan Ping = make(chan Ping)
 	for _, currentHost := range validHosts {
-		log.Printf("Spawning ping loop for host %v.\n", currentHost)
+		if !quietFlag {
+			log.Printf("Spawning ping loop for host %v.\n", currentHost)
+		}
 		go spawnPingLoop(c, currentHost, pingCountFlag, intervalFlag, oneshotFlag)
 	}
 	err := processPing(c)

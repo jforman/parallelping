@@ -31,6 +31,7 @@ var (
 	hostsFlag          string // Flag hosts: Comma-seperated list of IP/hostnames to ping
 	pingCountFlag      uint64 // Flag count: Uint8 Interger number of pings to send per cycle.
 	oneshotFlag        bool
+	originFlag         string // String denoting specific origin hostname used in metric submission.
 	intervalFlag       time.Duration
 	verboseFlag        bool
 	re_ping_packetloss *regexp.Regexp
@@ -126,6 +127,7 @@ func init() {
 	flag.StringVar(&hostsFlag, "hosts", "", "Comma-seperated list of hosts to ping.")
 	flag.Uint64Var(&pingCountFlag, "pingcount", 5, "Number of pings per cycle.")
 	flag.BoolVar(&oneshotFlag, "oneshot", false, "Execute just one ping round per host. Do not loop.")
+	flag.StringVar(&originFlag, "origin", "", "Override hostname as origin with this value.")
 	flag.DurationVar(&intervalFlag, "interval", 60*time.Second, "Seconds of wait in between each round of pings.")
 	flag.StringVar(&receiverHostFlag, "receiverhost", "", "Hostname of metrics receiver. Optional")
 	flag.IntVar(&receiverPortFlag, "receiverport", 0, "Port of receiver.")
@@ -162,8 +164,12 @@ func processPingOutput(pingOutput string, pingErr bool) Ping {
 	var stats PingStats
 	now := time.Now()
 	ping.time = now.Unix()
-	origin, _ := os.Hostname()
-	ping.origin = origin
+	if len(originFlag) == 0 {
+		origin, _ := os.Hostname()
+		ping.origin = origin
+	} else {
+		ping.origin = originFlag
+	}
 
 	re_ping_hostname_matches := re_ping_hostname.FindAllStringSubmatch(pingOutput, -1)[0]
 	ping.destination = re_ping_hostname_matches[1]

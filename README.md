@@ -17,29 +17,31 @@ Run 'pping' with the appropriate flags!
 ```bash
 $ go run pping.go --help
   -hosts string
-    	Comma-seperated list of hosts to ping.
+    Comma-seperated list of hosts to ping.
   -interval duration
-    	Seconds of wait in between each round of pings. (default 1m0s)
+    Seconds of wait in between each round of pings. (default 1m0s)
   -oneshot
-    	Execute just one ping round per host. Do not loop.
+    Execute just one ping round per host. Do not loop.
   -pingcount uint
-    	Number of pings per cycle. (default 5)
+    Number of pings per cycle. (default 5)
+  -q 
+    If set, only log in case of errors.
   -receiverdatabase string
-    	Database for InfluxDB.
+    Database for InfluxDB.
   -receiverhost string
-    	Hostname of metrics receiver. Optional
+    Hostname of metrics receiver. Optional
   -receivernoop
-    	If set, do not send Metrics to receiver.
+    If set, do not send Metrics to receiver.
   -receiverpassword string
-    	Password for InfluxDB database. Optional.
+    Password for InfluxDB database. Optional.
   -receiverport int
-    	Port of receiver.
+    Port of receiver.
   -receivertype string
-    	Type of receiver for statistics. Optional.
+    Type of receiver for statistics. Optional.
   -receiverusername string
-    	Username for InfluxDB database. Optional.
-  -v	If set, print out metrics as they are processed.
-exit status 2
+    Username for InfluxDB database. Optional.
+  -v
+    If set, print out metrics as they are processed.
 ```
 
 The help output should be self explanatory, both with required and optional parameters. 
@@ -90,6 +92,22 @@ Fields
 | min | minimum RTT observed over Ping execution |
 | avg | average RTT observed over Ping execution |
 | max | maxmimum RTT observed over Ping execution |
-| loss | Percentage packet loss during the ping execution. |
+| loss | Percentage packet loss during the ping execuion. |
 | mdev | Standard deviation, or essentially the averag eof how far each ping RTT is from the mean. |
 
+
+## Building and running on Docker
+
+To automatically build a pping.go binary as /tmp/parallelping on your machine.
+
+Using golang:1.7-onbuild image
+
+```bash
+docker run --rm -v /tmp:/tmp/buildout -v "$PWD":/usr/src/myapp -v "$GOPATH":/go -w /usr/src/myapp -e CGO_ENABLED=0 golang:1.7-onbuild go build -o /tmp/buildout/parallelping
+```
+
+To build a Docker image with the above parallelping binary:
+
+```bash
+docker build .
+```

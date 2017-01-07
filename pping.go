@@ -7,6 +7,7 @@ import (
 	"fmt"
 	influxdbclient "github.com/influxdata/influxdb/client/v2"
 	"github.com/jforman/carbon-golang"
+	"io/ioutil"
 	"log"
 	"net"
 	"os"
@@ -57,6 +58,10 @@ type Ping struct {
 }
 
 func isReceiverFullyDefined() bool {
+	if len(receiverTypeFlag) == 0 {
+		// No receiver is defined, so don't try to judge its validity.
+		return true
+	}
 	if len(receiverHostFlag) > 0 && (receiverPortFlag > 0) {
 		return true
 	}
@@ -75,6 +80,23 @@ func checkValidReceiverType(rType string, validTypes []string) bool {
 	return false
 }
 
+func getDistro() string {
+	contents, _ := ioutil.ReadFile("/etc/os-release")
+	re_distro := regexp.MustCompile("ID=([a-zA-Z]+)")
+
+	str_contents := string(contents)
+	if verboseFlag {
+		log.Printf("Contents of /etc/os-release: %v.\n", str_contents)
+	}
+
+	distro := re_distro.FindStringSubmatch(str_contents)[1]
+
+	if verboseFlag {
+		log.Printf("Distribution determined to be: %v.\n", distro)
+	}
+	return distro
+}
+
 func setOsParams() {
 	re_ping_hostname = regexp.MustCompile(`--- (?P<hostname>\S+) ping statistics ---`)
 	if !quietFlag {
@@ -88,9 +110,15 @@ func setOsParams() {
 	case "linux":
 		pingBinary = "/bin/ping"
 		re_ping_packetloss = regexp.MustCompile(`(?P<loss>\d+)\% packet loss`)
-		re_ping_rtt = regexp.MustCompile(`(rtt|round-trip) min/avg/max/(mdev|stddev) = (?P<min>\d+.\d+)/(?P<avg>\d+.\d+)/(?P<max>\d+.\d+)/(?P<mdev>\d+.\d+) ms`)
+		distro := getDistro()
+		switch distro {
+		case "ubuntu", "debian":
+			re_ping_rtt = regexp.MustCompile(`(rtt|round-trip) min/avg/max/(mdev|stddev) = (?P<min>\d+.\d+)/(?P<avg>\d+.\d+)/(?P<max>\d+.\d+)/(?P<mdev>\d+.\d+) ms`)
+		case "alpine":
+			re_ping_rtt = regexp.MustCompile(`round-trip min/avg/max = (?P<min>\d+.\d+)/(?P<avg>\d+.\d+)/(?P<max>\d+.\d+) ms`)
+		}
 	default:
-		log.Fatalf("Unable to determine runtime.GOOS: %v.\n", runtime.GOOS)
+		log.Fatalf("Unsupported operating system. runtime.GOOS: %v.\n", runtime.GOOS)
 	}
 }
 
@@ -268,13 +296,12 @@ func processPing(c <-chan Ping) error {
 	}
 
 	if err != nil {
-		log.Println("Error in creating connection to receiver. Ignoring and moving on.")
+		log.Printf("Error in creating connection to receiver: %v.\n", err)
 	}
 	for {
 		pingResult := <-c
 		if !isReceiverFullyDefined() {
-			// No receiver is defined. Silently skip.
-			// Should I really log something each iteration? That seems unnecessarily noisy.
+			// A receiver is not fully defined.
 			log.Printf("You receiver is not fully defined. Host: %v, Port: %v.\n", receiverHostFlag, receiverPortFlag)
 			continue
 		}
@@ -283,6 +310,7 @@ func processPing(c <-chan Ping) error {
 			err := carbonReceiver.SendMetrics(createCarbonMetrics(pingResult))
 			if err != nil {
 				log.Printf("Error sending metrics to Carbon: %v.\n", err)
+				continue
 			}
 		case "influxdb":
 			ret, err := createInfluxDBMetrics(pingResult)
@@ -291,13 +319,14 @@ func processPing(c <-chan Ping) error {
 			}
 			err = ic.Write(ret)
 			if err != nil {
-				log.Printf("Error writing metrics to Influxdb: %v.\n", err)
+				log.Printf("Error sending metrics to Influxdb: %v.\n", err)
+				continue
 			}
 		}
-
 		if verboseFlag {
-			log.Printf("Successfully published %v metrics to %v.\n", receiverTypeFlag, receiverHostFlag)
+			log.Printf("Metrics successfully written to %v receiver at %v:%v.\n", receiverTypeFlag, receiverHostFlag, receiverPortFlag)
 		}
+
 	}
 	return nil
 }

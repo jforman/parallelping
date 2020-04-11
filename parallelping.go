@@ -30,12 +30,14 @@ var (
 	originFlag         string // String denoting specific origin hostname used in metric submission.
 	intervalFlag       time.Duration
 	verboseFlag        bool
+	ipv6EnabledFlag    bool
+	metricsPortFlag    uint64 // Port to listen in for metrics requests.
 	re_ping_packetloss *regexp.Regexp
 	re_ping_rtt        *regexp.Regexp
 	re_ping_hostname   *regexp.Regexp
 	quietFlag          bool
 
-	pingBinary string // Path to ping binary based upon operating system)
+	pingBinary string // Path to ping binary
 
 	ping_rtt_min_ms = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -43,6 +45,7 @@ var (
 			Help: "Ping rtt minimum in ms.",
 		},
 		[]string{
+			"address_family",
 			"destination",
 			"hostname",
 		},
@@ -53,6 +56,7 @@ var (
 			Help: "Ping rtt average in ms.",
 		},
 		[]string{
+			"address_family",
 			"destination",
 			"hostname",
 		},
@@ -63,6 +67,7 @@ var (
 			Help: "Ping rtt maximum in ms.",
 		},
 		[]string{
+			"address_family",
 			"destination",
 			"hostname",
 		},
@@ -73,6 +78,7 @@ var (
 			Help: "Ping rtt standard deviation in ms.",
 		},
 		[]string{
+			"address_family",
 			"destination",
 			"hostname",
 		},
@@ -83,6 +89,7 @@ var (
 			Help: "Ping rtt loss in percent.",
 		},
 		[]string{
+			"address_family",
 			"destination",
 			"hostname",
 		},
@@ -98,11 +105,12 @@ type PingStats struct {
 }
 
 type Ping struct {
-	origin      string
-	destination string
-	hostname    string // Derived DNS hostname for destination.
-	time        int64
-	stats       PingStats
+	origin         string
+	destination    string
+	hostname       string // Derived DNS hostname for destination.
+	time           int64
+	address_family string // ipv4, ipv6
+	stats          PingStats
 }
 
 func getDistro() string {
@@ -126,23 +134,15 @@ func setOsParams() {
 	if !quietFlag {
 		log.Printf("Operating System determined to be: %v.\n", runtime.GOOS)
 	}
-	switch runtime.GOOS {
-	case "openbsd":
-		pingBinary = "/sbin777/ping"
-		re_ping_packetloss = regexp.MustCompile(`(?P<loss>\d+.\d+)\% packet loss`)
-		re_ping_rtt = regexp.MustCompile(`round-trip min/avg/max/std-dev = (?P<min>\d+.\d+)/(?P<avg>\d+.\d+)/(?P<max>\d+.\d+)/(?P<mdev>\d+.\d+) ms`)
-	case "linux":
+	re_ping_packetloss = regexp.MustCompile(`(?P<loss>\d+)\% packet loss`)
+	distro := getDistro()
+	switch distro {
+	case "ubuntu", "debian":
+		pingBinary = "/usr/bin/ping"
+		re_ping_rtt = regexp.MustCompile(`(rtt|round-trip) min/avg/max/(mdev|stddev) = (?P<min>\d+.\d+)/(?P<avg>\d+.\d+)/(?P<max>\d+.\d+)/(?P<mdev>\d+.\d+) ms`)
+	case "alpine":
 		pingBinary = "/bin/ping"
-		re_ping_packetloss = regexp.MustCompile(`(?P<loss>\d+)\% packet loss`)
-		distro := getDistro()
-		switch distro {
-		case "ubuntu", "debian":
-			re_ping_rtt = regexp.MustCompile(`(rtt|round-trip) min/avg/max/(mdev|stddev) = (?P<min>\d+.\d+)/(?P<avg>\d+.\d+)/(?P<max>\d+.\d+)/(?P<mdev>\d+.\d+) ms`)
-		case "alpine":
-			re_ping_rtt = regexp.MustCompile(`round-trip min/avg/max = (?P<min>\d+.\d+)/(?P<avg>\d+.\d+)/(?P<max>\d+.\d+) ms`)
-		}
-	default:
-		log.Fatalf("Unsupported operating system. runtime.GOOS: %v.\n", runtime.GOOS)
+		re_ping_rtt = regexp.MustCompile(`round-trip min/avg/max = (?P<min>\d+.\d+)/(?P<avg>\d+.\d+)/(?P<max>\d+.\d+) ms`)
 	}
 }
 
@@ -154,6 +154,8 @@ func init() {
 	flag.DurationVar(&intervalFlag, "interval", 60*time.Second, "Seconds of wait in between each round of pings.")
 	flag.BoolVar(&verboseFlag, "v", false, "If set, print out metrics as they are processed.")
 	flag.BoolVar(&quietFlag, "q", false, "If set, only log in case of errors.")
+	flag.BoolVar(&ipv6EnabledFlag, "ipv6", false, "If set, attempt to ping via IPv6 and gather statistics.")
+	flag.Uint64Var(&metricsPortFlag, "metricsport", 9100, "Port to listen on for Prometheus metrics scrapes.")
 }
 
 // Return true if desination resolves, false if not.
@@ -175,7 +177,7 @@ func getValidDestinations(d []string) []string {
 	return vd
 }
 
-func processPingOutput(pingOutput string, pingErr bool) Ping {
+func processPingOutput(pingOutput string) Ping {
 	var ping Ping
 	var stats PingStats
 	now := time.Now()
@@ -194,41 +196,47 @@ func processPingOutput(pingOutput string, pingErr bool) Ping {
 
 	stats.loss, _ = strconv.ParseFloat(re_packetloss_matches[1], 64)
 
-	if pingErr == true {
-		stats.min, stats.avg, stats.max, stats.mdev = 0, 0, 0, 0
-	} else {
-		re_rtt_matches := re_ping_rtt.FindAllStringSubmatch(pingOutput, -1)[0]
-		rtt_map := make(map[string]string)
-		for i, name := range re_ping_rtt.SubexpNames() {
-			if i != 0 {
-				rtt_map[name] = re_rtt_matches[i]
-			}
+	re_rtt_matches := re_ping_rtt.FindAllStringSubmatch(pingOutput, -1)[0]
+	rtt_map := make(map[string]string)
+	for i, name := range re_ping_rtt.SubexpNames() {
+		if i != 0 {
+			rtt_map[name] = re_rtt_matches[i]
 		}
-		stats.min, _ = strconv.ParseFloat(rtt_map["min"], 64)
-		stats.avg, _ = strconv.ParseFloat(rtt_map["avg"], 64)
-		stats.max, _ = strconv.ParseFloat(rtt_map["max"], 64)
-		stats.mdev, _ = strconv.ParseFloat(rtt_map["mdev"], 64)
 	}
+	stats.min, _ = strconv.ParseFloat(rtt_map["min"], 64)
+	stats.avg, _ = strconv.ParseFloat(rtt_map["avg"], 64)
+	stats.max, _ = strconv.ParseFloat(rtt_map["max"], 64)
+	stats.mdev, _ = strconv.ParseFloat(rtt_map["mdev"], 64)
 	ping.stats = stats
 	if verboseFlag {
-		log.Printf("Ping: %+v.\n", ping)
+		log.Printf("processPingOutput ping: %+v.\n", ping)
 	}
 	return ping
 }
 
-func executePing(host string, numPings uint64) (string, bool) {
-	pingError := false
+func executePing(host string, numPings uint64, do_ipv6 bool) (string, error) {
 	countFlag := fmt.Sprintf("-c%v", numPings)
-	out, err := exec.Command(pingBinary, countFlag, host).Output()
-	if err != nil {
-		log.Printf("Error with host %s, error: %s, output: %s.\n", host, err, out)
-		pingError = true
+	var familyFlag string
+	if do_ipv6 {
+		familyFlag = "-6"
+	} else {
+		familyFlag = "-4"
 	}
+	pingCommandStr := pingBinary + " " + familyFlag + " " + countFlag + " " + host
+	if verboseFlag {
+		log.Printf("Ping Command: %s.\n", pingCommandStr)
+	}
+	pingCommand := strings.Fields(pingCommandStr)
+	out, err := exec.Command(pingCommand[0], pingCommand[1:]...).Output()
 	s_out := string(out[:])
 	if verboseFlag {
-		log.Printf("Raw Ping Output: %v.\n", s_out)
+		log.Printf("Raw Ping Output: %v\n", s_out)
 	}
-	return s_out, pingError
+	if err != nil {
+		log.Printf("Error with host %s, error: %s, output: %s", host, err, out)
+		return s_out, err
+	}
+	return s_out, nil
 }
 
 func spawnPingLoop(c chan<- Ping,
@@ -236,13 +244,32 @@ func spawnPingLoop(c chan<- Ping,
 	destination string,
 	numPings uint64,
 	sleepTime time.Duration,
-	oneshot bool) {
-	log.Printf("Spawning ping loop for %s.\n", destination)
+	oneshot bool,
+	ipv6 bool) {
 	for {
-		raw_output, err := executePing(destination, numPings)
-		pingResult := processPingOutput(raw_output, err)
-		pingResult.destination = destination
-		c <- pingResult
+		log.Printf("Spawning IPv4 ping loop for %s.\n", destination)
+		raw_output, err := executePing(destination, numPings, false)
+		if err != nil {
+			log.Printf("Error in executing IPv4 ping for %s.\n", destination)
+		} else {
+			pingResult := processPingOutput(raw_output)
+			pingResult.destination = destination
+			pingResult.address_family = "ipv4"
+			c <- pingResult
+		}
+
+		if ipv6 {
+			log.Printf("Spawning IPv6 ping loop for %s.\n", destination)
+			raw_output, err := executePing(destination, numPings, true)
+			if err != nil {
+				log.Printf("Error in executing IPv6 ping for %s.\n", destination)
+			} else {
+				pingResult := processPingOutput(raw_output)
+				pingResult.destination = destination
+				pingResult.address_family = "ipv6"
+				c <- pingResult
+			}
+		}
 		if oneshot {
 			wg.Done()
 		} else {
@@ -253,24 +280,29 @@ func spawnPingLoop(c chan<- Ping,
 
 func updatePrometheusMetrics(ping Ping) {
 	ping_rtt_min_ms.With(prometheus.Labels{
-		"destination": ping.destination,
-		"hostname":    ping.hostname,
+		"address_family": ping.address_family,
+		"destination":    ping.destination,
+		"hostname":       ping.hostname,
 	}).Set(ping.stats.min)
 	ping_rtt_avg_ms.With(prometheus.Labels{
-		"destination": ping.destination,
-		"hostname":    ping.hostname,
+		"address_family": ping.address_family,
+		"destination":    ping.destination,
+		"hostname":       ping.hostname,
 	}).Set(ping.stats.avg)
 	ping_rtt_max_ms.With(prometheus.Labels{
-		"destination": ping.destination,
-		"hostname":    ping.hostname,
+		"address_family": ping.address_family,
+		"destination":    ping.destination,
+		"hostname":       ping.hostname,
 	}).Set(ping.stats.max)
 	ping_rtt_mdev_ms.With(prometheus.Labels{
-		"destination": ping.destination,
-		"hostname":    ping.hostname,
+		"address_family": ping.address_family,
+		"destination":    ping.destination,
+		"hostname":       ping.hostname,
 	}).Set(ping.stats.mdev)
 	ping_loss_pct.With(prometheus.Labels{
-		"destination": ping.destination,
-		"hostname":    ping.hostname,
+		"address_family": ping.address_family,
+		"destination":    ping.destination,
+		"hostname":       ping.hostname,
 	}).Set(ping.stats.loss)
 }
 
@@ -297,14 +329,14 @@ func main() {
 	for _, cd := range validDestinations {
 		wg.Add(1)
 		go func(dest string) {
-			spawnPingLoop(c, &wg, dest, pingCountFlag, intervalFlag, oneshotFlag)
+			spawnPingLoop(c, &wg, dest, pingCountFlag, intervalFlag, oneshotFlag, ipv6EnabledFlag)
 		}(cd)
 	}
 
 	go processPing(c)
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		if err := http.ListenAndServe(":2112", nil); err != nil {
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", metricsPortFlag), nil); err != nil {
 			log.Fatal("HttpServer: ListenAndServe() error: " + err.Error())
 		}
 	}()

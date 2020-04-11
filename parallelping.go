@@ -155,7 +155,7 @@ func init() {
 	flag.BoolVar(&verboseFlag, "v", false, "If set, print out metrics as they are processed.")
 	flag.BoolVar(&quietFlag, "q", false, "If set, only log in case of errors.")
 	flag.BoolVar(&ipv6EnabledFlag, "ipv6", false, "If set, attempt to ping via IPv6 and gather statistics.")
-	flag.Uint64Var(&metricsPortFlag, "metricsport", 9100, "Port to listen on for Prometheus metrics scrapes.")
+	flag.Uint64Var(&metricsPortFlag, "metricsport", 9110, "Port to listen on for Prometheus metrics scrapes.")
 }
 
 // Return true if desination resolves, false if not.
@@ -233,7 +233,7 @@ func executePing(host string, numPings uint64, do_ipv6 bool) (string, error) {
 		log.Printf("Raw Ping Output: %v\n", s_out)
 	}
 	if err != nil {
-		log.Printf("Error with host %s, error: %s, output: %s", host, err, out)
+		log.Printf("Error with host %s, error: %s, output: %s\n", host, err, out)
 		return s_out, err
 	}
 	return s_out, nil

@@ -109,5 +109,5 @@ docker run --rm -v /tmp:/tmp/buildout -v "$PWD":/usr/src/myapp -v "$GOPATH":/go 
 To build a Docker image with the above parallelping binary:
 
 ```bash
-docker build .
+docker build -t jforman/paralleling:latest .
 ```

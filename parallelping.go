@@ -48,6 +48,7 @@ var (
 			"address_family",
 			"destination",
 			"hostname",
+			"origin",
 		},
 	)
 	ping_rtt_avg_ms = promauto.NewGaugeVec(
@@ -59,6 +60,7 @@ var (
 			"address_family",
 			"destination",
 			"hostname",
+			"origin",
 		},
 	)
 	ping_rtt_max_ms = promauto.NewGaugeVec(
@@ -70,6 +72,7 @@ var (
 			"address_family",
 			"destination",
 			"hostname",
+			"origin",
 		},
 	)
 	ping_rtt_mdev_ms = promauto.NewGaugeVec(
@@ -81,6 +84,7 @@ var (
 			"address_family",
 			"destination",
 			"hostname",
+			"origin",
 		},
 	)
 	ping_loss_pct = promauto.NewGaugeVec(
@@ -92,6 +96,7 @@ var (
 			"address_family",
 			"destination",
 			"hostname",
+			"origin",
 		},
 	)
 )
@@ -150,7 +155,7 @@ func init() {
 	flag.StringVar(&destinationFlag, "destination", "", "Comma-seperated list of destinations to ping.")
 	flag.Uint64Var(&pingCountFlag, "pingcount", 5, "Number of pings per cycle.")
 	flag.BoolVar(&oneshotFlag, "oneshot", false, "Execute just one ping round per host. Do not loop.")
-	flag.StringVar(&originFlag, "origin", "", "Override hostname as origin with this value.")
+	flag.StringVar(&originFlag, "origin", "localhost", "Override hostname as origin with this value.")
 	flag.DurationVar(&intervalFlag, "interval", 60*time.Second, "Seconds of wait in between each round of pings.")
 	flag.BoolVar(&verboseFlag, "v", false, "If set, print out metrics as they are processed.")
 	flag.BoolVar(&quietFlag, "q", false, "If set, only log in case of errors.")
@@ -283,26 +288,31 @@ func updatePrometheusMetrics(ping Ping) {
 		"address_family": ping.address_family,
 		"destination":    ping.destination,
 		"hostname":       ping.hostname,
+		"origin":         ping.origin,
 	}).Set(ping.stats.min)
 	ping_rtt_avg_ms.With(prometheus.Labels{
 		"address_family": ping.address_family,
 		"destination":    ping.destination,
 		"hostname":       ping.hostname,
+		"origin":         ping.origin,
 	}).Set(ping.stats.avg)
 	ping_rtt_max_ms.With(prometheus.Labels{
 		"address_family": ping.address_family,
 		"destination":    ping.destination,
 		"hostname":       ping.hostname,
+		"origin":         ping.origin,
 	}).Set(ping.stats.max)
 	ping_rtt_mdev_ms.With(prometheus.Labels{
 		"address_family": ping.address_family,
 		"destination":    ping.destination,
 		"hostname":       ping.hostname,
+		"origin":         ping.origin,
 	}).Set(ping.stats.mdev)
 	ping_loss_pct.With(prometheus.Labels{
 		"address_family": ping.address_family,
 		"destination":    ping.destination,
 		"hostname":       ping.hostname,
+		"origin":         ping.origin,
 	}).Set(ping.stats.loss)
 }
 
